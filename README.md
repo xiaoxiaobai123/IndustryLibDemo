@@ -81,7 +81,42 @@ cmake --build build-full --config Release
 Windows 下靠 `CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON` 自动导出符号，源码里不需要
 `__declspec(dllexport)` 宏。
 
-## 四、演示步骤
+## 四、本地演示（本机不装编译器）
+
+编译全部在 GitHub Actions runner 上完成，本地只负责"跑"和"看"。
+
+```powershell
+# 第一次 / 想更新产物：-Fetch 会从最近一次成功的 CI 下载 Windows 产物到 dist\
+powershell -ExecutionPolicy Bypass -File tools\demo.ps1 -Fetch
+
+# 之后想演示哪个版本就切哪个（不必重新下载）
+powershell -ExecutionPolicy Bypass -File tools\demo.ps1 -Flow full   # 3 个流程
+powershell -ExecutionPolicy Bypass -File tools\demo.ps1 -Flow a      # 2 个流程
+
+powershell -ExecutionPolicy Bypass -File tools\demo.ps1 -Stop        # 收摊
+```
+
+脚本做三件事：起 `core.exe`（独立窗口，能看到日志刷）、起 `bridge.py`、开浏览器
+到 `http://127.0.0.1:8080`。想再加一个 UI 就另开一个终端 `python ui\ui_python.py`，
+两个 UI 会同时连同一个 core。
+
+`dist\` 已在 `.gitignore` 里，不进仓库。
+
+### 演示"库是真的库"
+
+```powershell
+# core.exe 的导入表里有我们自己的两个库
+powershell -File tools\show_deps.ps1
+```
+```
+A版        依赖: algo.dll, base.dll     含 customer_b: False
+全功能版   依赖: algo.dll, base.dll     含 customer_b: True
+```
+把 `base.dll` 改个名再双击 `core.exe`，Windows 会直接报 **STATUS_DLL_NOT_FOUND
+(0xC0000135)** 起不来 —— 说明 base 是运行期真的被加载的动态库，不是编译期塞进 exe 的。
+而 `customer_b` 那一行则说明：关掉的客户流程连字符串都不在二进制里。
+
+## 五、演示步骤（源码 / 编译角度）
 
 ### 1. 只开客户A：编入 2 个流程
 
@@ -138,7 +173,67 @@ python ui/web/bridge.py
 `ui/web/bridge.py` 用标准库 `http.server` 把核心的 TCP 转成 HTTP+SSE，
 顺带伺服 `index.html`，`POST /cmd` 转发指令 —— 不用 websocket，无需装任何依赖。
 
-## 五、TCP 协议
+## 六、流程：现有哪些、怎么切、怎么加
+
+### 现有 3 个流程
+
+| 流程 | 开关 | 判定规则 | 输出字段 |
+|---|---|---|---|
+| `common` | 无（**始终编入**） | `score >= 140` → OK | `threshold` |
+| `customer_a` | `-DFLOW_A=ON` | `score >= 150` → OK（更严） | `threshold` + `grade` (A/B/C) |
+| `customer_b` | `-DFLOW_B=ON` | `130 <= score <= 170` → OK（区间） | `band`(under/in_range/over) + `low`/`high`/`noise` |
+
+三个流程吃**同一帧、同一个 score**，各判各的。所以会出现同一帧结论不同——这正是要演示的：
+```
+frame 1  score=130   common: NG    customer_a: NG    customer_b: OK(in_range)
+frame 2  score=175   common: OK    customer_a: OK    customer_b: NG(over)
+```
+注意 `customer_b` 的输出字段和 A 完全不是一套：**流程之间不必共享输出结构**，
+因为它们本来就是不同客户的验收标准。
+
+### 切流程 = 改 cmake 开关，重新编
+
+```bash
+cmake -B build-a    -DFLOW_A=ON              # common+A    2 个流程
+cmake -B build-full -DFLOW_A=ON -DFLOW_B=ON  # common+A+B  3 个流程
+cmake -B build-min                           # common      1 个流程
+```
+不是配置文件、不是命令行参数、不是插件目录 —— **是编译期决定的**。
+交付给客户A的 exe 里，客户B的规则根本不存在（`tools\show_deps.ps1` 可当场验证）。
+
+本地演示切换不用重编，两个版本 CI 都编好了：`tools\demo.ps1 -Flow a` / `-Flow full`。
+
+### 加一个新流程（以客户C为例）—— 4 处改动
+
+1. **写流程**：新建 `core/flow/flow_customer_c.c`，照抄现有那 20 行的结构
+   ```c
+   static void run(int frame_id, const detect_result_t *r, char *json, size_t n)
+   { snprintf(json, n, "{...你的判定...}"); }
+   const flow_t FLOW_CUSTOMER_C = {"customer_c", run};
+   ```
+2. **声明**：`core/flow/flow.h` 里加
+   ```c
+   #ifdef FLOW_C
+   extern const flow_t FLOW_CUSTOMER_C;
+   #endif
+   ```
+3. **注册**：`core/main.c` 的 `g_flows[]` 数组里加
+   ```c
+   #ifdef FLOW_C
+       &FLOW_CUSTOMER_C,
+   #endif
+   ```
+4. **开关**：根 `CMakeLists.txt` 里加 `option(FLOW_C ...)`，以及跟 A/B 一样的
+   `list(APPEND FLOW_SOURCES ...)` / `BUILD_TAG` / `target_compile_definitions` 三行。
+
+**base 和 algo 一行都不用动**，也不用重新编库 —— 新客户的规则只是在既有算法之上
+换个判定口径。这就是分层的收益：改动被摁在最上面那一层里。
+
+代价是加流程要碰 4 个文件（而不是丢一个插件 .so 进目录）。这是刻意的取舍：
+换来的是"关掉的客户代码物理上不在交付物里"，对多客户分版交付的场景，这个保证比少改
+两行有价值。真到了流程几十个的规模，再把第 2、3 步用一张 X-macro 表收敛成一处即可。
+
+## 七、TCP 协议
 
 连接 `127.0.0.1:9500`，**行分隔 JSON**。
 
@@ -151,7 +246,7 @@ python ui/web/bridge.py
 {"type":"status","running":true,"flow_count":3,"build":"common+A+B"}
 ```
 
-## 六、CI
+## 八、CI
 
 `.github/workflows/build.yml` 在 Linux 与 Windows runner 上各构建 A 版和全功能版，
 并跑 `tools/verify_tcp.py` 验证：结果流、`start`/`stop`/`status`、BUILD_TAG、

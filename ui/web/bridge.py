@@ -106,6 +106,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_sse(self):
         q = queue.Queue()
+        # 先补一条当前链路状态：页面可能在 bridge 连上 core 之后才打开，
+        # 只靠广播会永远停在"未连接"。
+        q.put(json.dumps({"type": "link", "connected": _sock is not None}))
         with _subs_lock:
             _subs.append(q)
         self.send_response(200)
