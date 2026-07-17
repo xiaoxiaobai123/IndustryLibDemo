@@ -1,13 +1,12 @@
-/* main.c - 主程序：装配各层 + 主循环 + 命令处理
+/* main.c - 宿主：起网络、跑主循环、转发命令
  *
- * 依赖方向 flow -> algo -> base，本文件是唯一知道"全貌"的地方。
- * 完全脱离 UI 独立运行；UI 随时接入/断开互不影响。
+ * 注意本文件 include 了什么：flow.h / log.h / net.h —— 没有算法，没有相机。
+ * 宿主不知道"表面评分""角度"是什么，也不知道谁用哪个相机：
+ * 那是每个客户项目(flow)自己的事。宿主只按节拍喊一嗓子 run()。
  */
 #include "flow.h"
-#include "detect.h"
 #include "log.h"
 #include "net.h"
-#include "plc_sim.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -23,10 +22,10 @@
 #  define BUILD_TAG "unknown"
 #endif
 
-#define PORT        9500
-#define TICK_MS     500
+#define PORT    9500
+#define TICK_MS 500
 
-/* 条件编译的落点：关掉的客户流程连符号都不存在 */
+/* 条件编译的落点：没勾选的客户项目连符号都不存在 */
 static const flow_t *const g_flows[] = {
     &FLOW_COMMON,
 #ifdef FLOW_A
@@ -50,11 +49,18 @@ static void on_cmd(const char *cmd, char *reply, size_t n)
         g_running = 0;
         log_msg("main", "cmd stop -> idle");
         snprintf(reply, n, "{\"type\":\"ack\",\"cmd\":\"stop\",\"running\":false}");
+    } else if (strcmp(cmd, "trace") == 0) {
+        int on = !log_trace_enabled();
+        log_set_trace(on);
+        log_msg("main", "cmd trace -> %s", on ? "on" : "off");
+        snprintf(reply, n, "{\"type\":\"ack\",\"cmd\":\"trace\",\"trace\":%s}",
+                 on ? "true" : "false");
     } else if (strcmp(cmd, "status") == 0) {
         snprintf(reply, n,
                  "{\"type\":\"status\",\"running\":%s,\"flow_count\":%d,"
-                 "\"build\":\"%s\"}",
-                 g_running ? "true" : "false", FLOW_COUNT, BUILD_TAG);
+                 "\"build\":\"%s\",\"trace\":%s}",
+                 g_running ? "true" : "false", FLOW_COUNT, BUILD_TAG,
+                 log_trace_enabled() ? "true" : "false");
     } else {
         snprintf(reply, n, "{\"type\":\"error\",\"msg\":\"unknown cmd\"}");
     }
@@ -62,31 +68,31 @@ static void on_cmd(const char *cmd, char *reply, size_t n)
 
 static void tick(void)
 {
-    frame_t         f;
-    detect_result_t r;
-    char            json[512];
-    int             i;
+    char json[512];
+    int  i;
 
-    plc_sim_next(&f);                              /* base : 取一帧 */
-    detect_run(f.px, PLC_FRAME_PIXELS, &r);        /* algo : 算 score */
-
-    for (i = 0; i < FLOW_COUNT; i++) {             /* flow : 各自判定 */
-        g_flows[i]->run(f.frame_id, &r, json, sizeof(json));
+    /* 宿主对每个项目一视同仁：喊一声 run，拿回一行 JSON。
+     * 取图/算法/判定全在 flow 里面发生，这里看不到也不需要看到。 */
+    for (i = 0; i < FLOW_COUNT; i++) {
+        if (log_trace_enabled())
+            log_trace("main", "--- tick: 调 flow[%d] %s.run() ---", i, g_flows[i]->name);
+        g_flows[i]->run(json, sizeof(json));
         log_msg("flow", "%s", json);
         net_broadcast(json);
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     int i;
+
+    if (argc > 1 && strcmp(argv[1], "--trace") == 0) log_set_trace(1);
 
     log_msg("main", "IndustryLibDemo core   build=%s", BUILD_TAG);
     log_msg("main", "flows compiled in: %d", FLOW_COUNT);
     for (i = 0; i < FLOW_COUNT; i++)
         log_msg("main", "  [%d] %s", i + 1, g_flows[i]->name);
 
-    plc_sim_init(20260716u);
     if (net_start(PORT, on_cmd) != 0) {
         log_msg("main", "net_start failed, exit");
         return 1;

@@ -9,7 +9,10 @@
   powershell -ExecutionPolicy Bypass -File tools\demo.ps1 -Stop           # 收摊
 #>
 param(
-    [ValidateSet("a", "full")] [string]$Flow = "full",
+    # a    = 客户A的交付物（苹果外观检测项目）
+    # b    = 客户B的交付物（角度测量项目）
+    # full = 内部全功能版（回归测试用）
+    [ValidateSet("a", "b", "full")] [string]$Flow = "full",
     [switch]$Fetch,   # 从 GitHub Actions 下载最新产物（第一次用 / 想更新时加）
     [switch]$Stop     # 关掉 core 和 bridge
 )

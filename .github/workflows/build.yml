@@ -22,13 +22,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      # ---- 演示步骤 1：只开客户A ----
+      # ---- 客户A的交付物：苹果外观检测项目（CAM_A + algo.detect）----
       - name: Configure A build (FLOW_A=ON)
         run: cmake -B build-a -DFLOW_A=ON
       - name: Build A
         run: cmake --build build-a --config Release
 
-      # ---- 演示步骤 2：全功能 ----
+      # ---- 客户B的交付物：角度测量项目（CAM_B + algo.angle）----
+      - name: Configure B build (FLOW_B=ON)
+        run: cmake -B build-b -DFLOW_B=ON
+      - name: Build B
+        run: cmake --build build-b --config Release
+
+      # ---- 内部全功能版：回归测试用，所有客户项目编在一起 ----
       - name: Configure full build (FLOW_A=ON FLOW_B=ON)
         run: cmake -B build-full -DFLOW_A=ON -DFLOW_B=ON
       - name: Build full
@@ -38,10 +44,11 @@ jobs:
         shell: bash
         run: |
           # MSVC 是多配置生成器，产物落在 bin/Release 下
-          echo "--- build-a ---";    find build-a/bin    -type f | xargs ls -l
-          echo "--- build-full ---"; find build-full/bin -type f | xargs ls -l
+          for d in build-a build-b build-full; do
+            echo "--- $d ---"; find $d/bin -type f | xargs ls -l
+          done
 
-      # ---- 演示步骤 3：core 独立运行（不开任何 UI）----
+      # ---- core 独立运行（不开任何 UI）----
       - name: Core standalone output (no UI)
         shell: bash
         run: |
@@ -50,30 +57,56 @@ jobs:
           PID=$!; sleep 3; kill $PID 2>/dev/null || true
           head -20 out.txt
 
-      # ---- 条件编译证据：A 版二进制里不该有 customer_b ----
-      - name: Assert FLOW_B absent from A build
+      # ---- 调用链：--trace 打出 flow -> algo -> base 的真实调用顺序 ----
+      - name: Call chain (--trace)
         shell: bash
         run: |
-          # ls 对不存在的名字会返回 2，set -e 下会中断 —— 用 || true 兜住
+          BIN=$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)
+          "$BIN/core" --trace > trace.txt 2>&1 &
+          PID=$!; sleep 2; kill $PID 2>/dev/null || true
+          sed -n '/tick/,$p' trace.txt | head -30
+
+      # ---- 依赖方向：base 不许反向依赖 algo ----
+      - name: Assert dependency direction (flow -> algo -> base)
+        shell: bash
+        run: |
+          if grep -rEl '#include "(detect|angle)\.h"' core/base/; then
+            echo "FAIL: base 反向依赖了 algo"; exit 1
+          fi
+          echo "OK: base 不认识 algo"
+          if grep -rEl '#include "flow\.h"' core/base/ core/algo/; then
+            echo "FAIL: base/algo 反向依赖了 flow"; exit 1
+          fi
+          echo "OK: base/algo 不认识 flow"
+          if grep -qE '#include "(detect|angle|plc_sim)\.h"' core/main.c; then
+            echo "FAIL: 宿主 main.c 直接碰了算法/相机，流程编排又漏到宿主里了"; exit 1
+          fi
+          echo "OK: 宿主 main.c 不认识算法和相机"
+
+      # ---- 条件编译证据：各客户交付物里没有对方的项目代码 ----
+      - name: Assert per-customer isolation
+        shell: bash
+        run: |
           pick() { { ls "$1"/core "$1"/core.exe 2>/dev/null || true; } | head -1; }
           A=$(pick "$(ls -d build-a/bin/Release 2>/dev/null || echo build-a/bin)")
-          F=$(pick "$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)")
-          if grep -q "customer_b" "$A"; then
-            echo "FAIL: customer_b 出现在 A 版二进制里"; exit 1
-          fi
-          echo "OK: A 版二进制中不含 customer_b   ($A)"
-          if ! grep -q "customer_b" "$F"; then
-            echo "FAIL: 全功能版二进制里没有 customer_b"; exit 1
-          fi
-          echo "OK: 全功能版二进制中含 customer_b ($F)"
+          B=$(pick "$(ls -d build-b/bin/Release 2>/dev/null || echo build-b/bin)")
+          if grep -q "customer_b" "$A"; then echo "FAIL: 客户A的包里有客户B的项目"; exit 1; fi
+          echo "OK: 客户A的交付物里没有 customer_b"
+          if grep -q "customer_a" "$B"; then echo "FAIL: 客户B的包里有客户A的项目"; exit 1; fi
+          echo "OK: 客户B的交付物里没有 customer_a"
 
       # ---- TCP 验证 start/stop/status ----
-      - name: Verify A build (expect common+A, 2 flows)
+      - name: Verify A build (苹果外观项目, common+A, 2 flows)
         shell: bash
         run: |
           BIN=$(ls -d build-a/bin/Release 2>/dev/null || echo build-a/bin)
           python tools/verify_tcp.py "$BIN/core" "common+A" 2
-      - name: Verify full build (expect common+A+B, 3 flows)
+      - name: Verify B build (角度测量项目, common+B, 2 flows)
+        shell: bash
+        run: |
+          BIN=$(ls -d build-b/bin/Release 2>/dev/null || echo build-b/bin)
+          python tools/verify_tcp.py "$BIN/core" "common+B" 2
+      - name: Verify full build (内部回归, common+A+B, 3 flows)
         shell: bash
         run: |
           BIN=$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)
@@ -84,4 +117,5 @@ jobs:
           name: ${{ matrix.name }}-binaries
           path: |
             build-a/bin/
+            build-b/bin/
             build-full/bin/

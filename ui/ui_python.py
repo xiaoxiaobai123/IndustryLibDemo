@@ -103,11 +103,11 @@ class App:
                         foreground=FG, rowheight=24, borderwidth=0)
         style.configure("D.Treeview.Heading", background="#2a303c", foreground=MUTED,
                         borderwidth=0)
-        cols = ("frame", "flow", "score", "verdict")
+        cols = ("frame", "flow", "metric", "verdict")
         self.tree = ttk.Treeview(table, columns=cols, show="headings", style="D.Treeview")
         for c, w in zip(cols, (80, 130, 80, 90)):
             self.tree.heading(c, text={"frame": "帧号", "flow": "流程",
-                                       "score": "score", "verdict": "判定"}[c])
+                                       "metric": "主指标", "verdict": "判定"}[c])
             self.tree.column(c, width=w, anchor="center")
         self.tree.tag_configure("OK", foreground=OK)
         self.tree.tag_configure("NG", foreground=NG)
@@ -148,7 +148,9 @@ class App:
         else:
             self.ng_n += 1
             self.ng_lbl.config(text=str(self.ng_n))
-        self.tree.insert("", 0, values=(m["frame"], m["flow"], m["score"], v), tags=(v,))
+        # 各项目主指标不同：表面检测看 score，角度测量看 angle
+        metric = m["score"] if "score" in m else "%d°" % m["angle"]
+        self.tree.insert("", 0, values=(m["frame"], m["flow"], metric, v), tags=(v,))
         kids = self.tree.get_children()
         if len(kids) > 200:
             self.tree.delete(*kids[200:])

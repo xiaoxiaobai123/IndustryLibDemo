@@ -75,7 +75,7 @@
   <div class="card" style="padding:0">
     <div class="scroll">
       <table>
-        <thead><tr><th>帧号</th><th>流程</th><th>score</th><th>判定</th><th>详情</th></tr></thead>
+        <thead><tr><th>帧号</th><th>流程</th><th>主指标</th><th>判定</th><th>详情</th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -97,7 +97,8 @@ function onResult(m){
   const isOK = m.verdict === 'OK';
   $('lamp').className = 'card lamp ' + (isOK ? 'ok' : 'ng');
   $('lampText').textContent = m.verdict;
-  $('lampSub').textContent = `${m.flow} · score ${m.score}`;
+  $('lampSub').textContent = m.score !== undefined
+      ? `${m.flow} · score ${m.score}` : `${m.flow} · angle ${m.angle}°`;
 
   isOK ? $('okN').textContent = ++ok : $('ngN').textContent = ++ng;
   frames.add(m.frame);
@@ -105,12 +106,17 @@ function onResult(m){
   $('rate').textContent = ((ok / (ok + ng)) * 100).toFixed(1) + '%';
 
   // 各流程私有字段：grade(A) / band(B) —— 体现流程输出结构不同
-  const extra = [m.grade && `grade=${m.grade}`, m.band && `band=${m.band}`,
+  // 各项目主指标不同：表面检测看 score，角度测量看 angle
+  const metric = m.score !== undefined ? m.score : `${m.angle}°`;
+  const extra = [m.grade && `grade=${m.grade}`,
                  m.threshold && `th≥${m.threshold}`,
-                 m.low && `${m.low}~${m.high}`].filter(Boolean).join('  ');
+                 m.direction && `dir=${m.direction}`,
+                 m.tolerance && `tol=±${m.tolerance}°`,
+                 m.confidence !== undefined && `conf=${m.confidence}`]
+                .filter(Boolean).join('  ');
   const tr = document.createElement('tr');
   tr.className = 'new';
-  tr.innerHTML = `<td>${m.frame}</td><td>${m.flow}</td><td>${m.score}</td>
+  tr.innerHTML = `<td>${m.frame}</td><td>${m.flow}</td><td>${metric}</td>
                   <td><span class="pill ${m.verdict}">${m.verdict}</span></td>
                   <td style="color:var(--muted)">${extra}</td>`;
   const rows = $('rows');

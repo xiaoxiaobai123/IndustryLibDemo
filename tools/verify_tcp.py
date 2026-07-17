@@ -69,8 +69,16 @@ results = [m for m in msgs if m.get("type") == "result"]
 check("独立运行时持续产生结果", len(results) >= 2, "收到 %d 条" % len(results))
 flows_seen = {m["flow"] for m in results}
 check("编入的流程数 = %d" % want_flows, len(flows_seen) == want_flows, str(sorted(flows_seen)))
-check("结果字段完整", all({"frame", "score", "verdict"} <= m.keys() for m in results))
+# 每个客户项目输出字段本就不同：只要求公共骨架，不要求都有 score
+check("结果公共字段完整", all({"frame", "verdict", "flow"} <= m.keys() for m in results))
 check("verdict 只有 OK/NG", all(m["verdict"] in ("OK", "NG") for m in results))
+for f in flows_seen:
+    one = next(m for m in results if m["flow"] == f)
+    if f == "customer_b":  # 角度测量项目：有 angle，没有 score
+        check("customer_b 输出角度而非评分",
+              "angle" in one and "score" not in one, str(sorted(one.keys())))
+    else:                  # 表面检测项目：有 score
+        check("%s 输出评分" % f, "score" in one, str(sorted(one.keys())))
 
 # 2) status
 st = [m for m in link.cmd("status") if m.get("type") == "status"]
