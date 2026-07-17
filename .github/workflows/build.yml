@@ -1,0 +1,85 @@
+name: build-and-verify
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+            libext: .so
+          - os: windows-latest
+            name: windows
+            libext: .dll
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ---- 演示步骤 1：只开客户A ----
+      - name: Configure A build (FLOW_A=ON)
+        run: cmake -B build-a -DFLOW_A=ON
+      - name: Build A
+        run: cmake --build build-a --config Release
+
+      # ---- 演示步骤 2：全功能 ----
+      - name: Configure full build (FLOW_A=ON FLOW_B=ON)
+        run: cmake -B build-full -DFLOW_A=ON -DFLOW_B=ON
+      - name: Build full
+        run: cmake --build build-full --config Release
+
+      - name: Show library artifacts (${{ matrix.libext }})
+        shell: bash
+        run: |
+          echo "--- build-a/bin ---";    ls -l build-a/bin
+          echo "--- build-full/bin ---"; ls -l build-full/bin
+
+      # ---- 演示步骤 3：core 独立运行（不开任何 UI）----
+      - name: Core standalone output (no UI)
+        shell: bash
+        run: |
+          BIN=$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)
+          "$BIN/core" > out.txt 2>&1 &
+          PID=$!; sleep 3; kill $PID 2>/dev/null || true
+          head -20 out.txt
+
+      # ---- 条件编译证据：A 版二进制里不该有 customer_b ----
+      - name: Assert FLOW_B absent from A build
+        shell: bash
+        run: |
+          pick() { ls "$1"/core "$1"/core.exe 2>/dev/null | head -1; }
+          A=$(pick "$(ls -d build-a/bin/Release 2>/dev/null || echo build-a/bin)")
+          F=$(pick "$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)")
+          if grep -q "customer_b" "$A"; then
+            echo "FAIL: customer_b 出现在 A 版二进制里"; exit 1
+          fi
+          echo "OK: A 版二进制中不含 customer_b   ($A)"
+          if ! grep -q "customer_b" "$F"; then
+            echo "FAIL: 全功能版二进制里没有 customer_b"; exit 1
+          fi
+          echo "OK: 全功能版二进制中含 customer_b ($F)"
+
+      # ---- TCP 验证 start/stop/status ----
+      - name: Verify A build (expect common+A, 2 flows)
+        shell: bash
+        run: |
+          BIN=$(ls -d build-a/bin/Release 2>/dev/null || echo build-a/bin)
+          python tools/verify_tcp.py "$BIN/core" "common+A" 2
+      - name: Verify full build (expect common+A+B, 3 flows)
+        shell: bash
+        run: |
+          BIN=$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)
+          python tools/verify_tcp.py "$BIN/core" "common+A+B" 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-binaries
+          path: |
+            build-a/bin/
+            build-full/bin/
