@@ -32,6 +32,9 @@ class CoreLink:
         while True:
             try:
                 self.sock = socket.create_connection((HOST, PORT), timeout=3)
+                # 超时只该管"连"，不该管"收"：核心 stop 之后本来就没数据，
+                # 留着 timeout=3 会让 recv 每 3 秒抛超时 -> 假掉线 -> 重连打转
+                self.sock.settimeout(None)
                 self.on_state(True)
                 buf = b""
                 while True:
