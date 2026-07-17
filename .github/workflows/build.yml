@@ -37,8 +37,9 @@ jobs:
       - name: Show library artifacts (${{ matrix.libext }})
         shell: bash
         run: |
-          echo "--- build-a/bin ---";    ls -l build-a/bin
-          echo "--- build-full/bin ---"; ls -l build-full/bin
+          # MSVC 是多配置生成器，产物落在 bin/Release 下
+          echo "--- build-a ---";    find build-a/bin    -type f | xargs ls -l
+          echo "--- build-full ---"; find build-full/bin -type f | xargs ls -l
 
       # ---- 演示步骤 3：core 独立运行（不开任何 UI）----
       - name: Core standalone output (no UI)
@@ -53,7 +54,8 @@ jobs:
       - name: Assert FLOW_B absent from A build
         shell: bash
         run: |
-          pick() { ls "$1"/core "$1"/core.exe 2>/dev/null | head -1; }
+          # ls 对不存在的名字会返回 2，set -e 下会中断 —— 用 || true 兜住
+          pick() { { ls "$1"/core "$1"/core.exe 2>/dev/null || true; } | head -1; }
           A=$(pick "$(ls -d build-a/bin/Release 2>/dev/null || echo build-a/bin)")
           F=$(pick "$(ls -d build-full/bin/Release 2>/dev/null || echo build-full/bin)")
           if grep -q "customer_b" "$A"; then

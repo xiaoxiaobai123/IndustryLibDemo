@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows 控制台默认 cp1252
+
 exe, want_tag, want_flows = sys.argv[1], sys.argv[2], int(sys.argv[3])
 if not os.path.exists(exe) and os.path.exists(exe + ".exe"):
     exe += ".exe"
